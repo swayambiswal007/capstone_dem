@@ -1,5 +1,354 @@
-const N=55,x=[],y=[],z=[],lake=[];for(let i=0;i<N;i++){x.push(80.881+i*.000075);y.push(30.051+i*.000075)}for(let r=0;r<N;r++){let row=[];for(let c=0;c<N;c++){let a=(c-N/2)/N,b=(r-N/2)/N;row.push(4250+850*Math.exp(-((a+.17)**2+(b-.06)**2)/.08)+520*Math.exp(-((a-.3)**2+(b+.24)**2)/.055)+170*Math.sin(a*14)*Math.cos(b*11))}z.push(row)}for(let r=0;r<N;r++)for(let c=0;c<N;c++){let a=(c-N*.54)/5.8,b=(r-N*.49)/3.8;if(a*a+b*b<1)lake.push({x:x[c],y:y[r],z:z[r][c]+35})}
-const cam={eye:{x:1.55,y:1.45,z:1.2},up:{x:0,y:0,z:1}};Plotly.newPlot('terrain',[{x,y,z,type:'surface',colorscale:[[0,'#27311f'],[.25,'#5c543c'],[.55,'#877656'],[.8,'#aa9a75'],[1,'#dfd1aa']],showscale:false,opacity:.96},{x:lake.map(p=>p.x),y:lake.map(p=>p.y),z:lake.map(p=>p.z),type:'scatter3d',mode:'markers',marker:{size:7,color:'#29d5e7'}}],{paper_bgcolor:'rgba(0,0,0,0)',margin:{l:0,r:0,t:0,b:0},scene:{bgcolor:'rgba(0,0,0,0)',xaxis:{title:'Longitude',color:'#78909f',gridcolor:'#1d3544'},yaxis:{title:'Latitude',color:'#78909f',gridcolor:'#1d3544'},zaxis:{title:'Elevation (m)',color:'#78909f',gridcolor:'#1d3544'},camera:cam}},{responsive:true,displaylogo:false});
-document.getElementById('reset').onclick=()=>Plotly.relayout('terrain',{'scene.camera':cam});document.getElementById('top').onclick=()=>Plotly.relayout('terrain',{'scene.camera':{eye:{x:.01,y:.01,z:2.25},up:{x:0,y:1,z:0}}});
-const xs=lake.map(p=>p.x),ys=lake.map(p=>p.y),zs=lake.map(p=>p.z),mnx=Math.min(...xs),mxx=Math.max(...xs),mny=Math.min(...ys),mxy=Math.max(...ys),G=28,bx=[],by=[],bz=[];for(let i=0;i<G;i++){bx.push(mnx+(mxx-mnx)*i/(G-1));by.push(mny+(mxy-mny)*i/(G-1))}for(let r=0;r<G;r++){let row=[];for(let c=0;c<G;c++){let a=(bx[c]-(mnx+mxx)/2)/((mxx-mnx)/2),b=(by[r]-(mny+mxy)/2)/((mxy-mny)/2);row.push(a*a+b*b<1.08?4376+7*Math.sin(a*4.5)+4*Math.cos(b*5):null)}bz.push(row)}Plotly.newPlot('blueprint',[{x:bx,y:by,z:bz,type:'surface',colorscale:[[0,'#071923'],[.5,'#103544'],[1,'#1bc5d8']],showscale:false,opacity:.38,contours:{z:{show:true,color:'#55e8f4',width:2}}},{x:xs,y:ys,z:zs.map(v=>v+3),type:'scatter3d',mode:'markers',marker:{size:4,color:'#d8fbff'}}],{paper_bgcolor:'rgba(0,0,0,0)',margin:{l:0,r:0,t:0,b:0},scene:{bgcolor:'rgba(0,0,0,0)',xaxis:{title:'Lon',color:'#607987'},yaxis:{title:'Lat',color:'#607987'},zaxis:{title:'m',color:'#607987'},camera:{eye:{x:1.25,y:1.25,z:.72}},aspectratio:{x:1.35,y:.85,z:.65}}},{responsive:true,displaylogo:false});document.getElementById('bpTop').onclick=()=>Plotly.relayout('blueprint',{'scene.camera':{eye:{x:.01,y:.01,z:2.3},up:{x:0,y:1,z:0}}});document.getElementById('bp3d').onclick=()=>Plotly.relayout('blueprint',{'scene.camera':{eye:{x:1.25,y:1.25,z:.72},up:{x:0,y:0,z:1}}});
-const file=document.getElementById('file'),predict=document.getElementById('predict');file.onchange=()=>{if(!file.files.length)return;let f=file.files[0];document.getElementById('fi').style.display='flex';document.getElementById('fn').textContent=f.name;document.getElementById('fm').textContent=(f.size/1024).toFixed(1)+' KB • historical dataset';document.getElementById('ut').textContent='Dataset selected';document.getElementById('ux').textContent='Ready for model inference';document.getElementById('ms').textContent='Dataset loaded';predict.disabled=false};document.getElementById('rm').onclick=()=>{file.value='';document.getElementById('fi').style.display='none';document.getElementById('ut').textContent='Drop dataset here';document.getElementById('ux').textContent='CSV or Excel • time-series features';document.getElementById('ms').textContent='Upload a dataset to begin';predict.disabled=true};predict.onclick=()=>{predict.disabled=true;predict.textContent='◌  Processing historical record';document.getElementById('ms').textContent='Feature extraction in progress';setTimeout(()=>{let s=72;document.getElementById('score').textContent=s+'%';document.getElementById('level').textContent='Moderate–High';document.getElementById('desc').textContent='Placeholder output — connect this panel to the trained temporal GLOF model.';document.getElementById('state').textContent='DEMO OUTPUT';document.getElementById('ring').style.background=`radial-gradient(circle,#091721 55%,transparent 56%),conic-gradient(#29d5e7 ${s*3.6}deg,#1a2d38 0deg)`;document.getElementById('ms').textContent='Frontend demonstration complete';predict.disabled=false;predict.innerHTML='<span>⚡</span> Run GLOF Prediction'},900)};
+document.addEventListener("DOMContentLoaded", async () => {
+    const terrainError = document.getElementById("terrainError");
+    const blueprintError = document.getElementById("blueprintError");
+
+    const showError = (el, msg) => {
+        if (el) {
+            el.textContent = msg;
+            el.style.display = "block";
+        }
+        console.error(msg);
+    };
+
+    if (typeof Plotly === "undefined") {
+        showError(terrainError, "Plotly failed to load. Check your internet connection.");
+        showError(blueprintError, "Plotly failed to load. Check your internet connection.");
+        return;
+    }
+
+    try {
+        const response = await fetch("/api/scene", { cache: "no-store" });
+        const data = await response.json();
+
+        if (!response.ok || data.error) {
+            throw new Error(data.error || `API returned HTTP ${response.status}`);
+        }
+
+        // ---------------- TERRAIN ----------------
+        const terrain = data.terrain;
+        const lake = data.lake_points || [];
+
+        const terrainTrace = {
+            x: terrain.x,
+            y: terrain.y,
+            z: terrain.z,
+            type: "surface",
+            name: "Copernicus GLO-30 DEM",
+            colorscale: [
+                [0.00, "#20291f"],
+                [0.18, "#39432f"],
+                [0.36, "#5b5b42"],
+                [0.55, "#817455"],
+                [0.72, "#a28f69"],
+                [0.87, "#b9a97d"],
+                [1.00, "#ded2ad"]
+            ],
+            showscale: false,
+            lighting: {
+                ambient: 0.48,
+                diffuse: 0.80,
+                specular: 0.16,
+                roughness: 0.86
+            },
+            contours: {
+                z: {
+                    show: true,
+                    color: "rgba(35,48,38,.30)",
+                    width: 1
+                }
+            },
+            hovertemplate:
+                "<b>Copernicus GLO-30</b><br>" +
+                "Longitude: %{x:.5f}<br>" +
+                "Latitude: %{y:.5f}<br>" +
+                "Elevation: %{z:.1f} m<extra></extra>"
+        };
+
+        const lakeTrace = {
+            x: lake.map(p => p.x),
+            y: lake.map(p => p.y),
+            z: lake.map(p => p.z + 7),
+            type: "scatter3d",
+            mode: "markers",
+            name: "DINOv2 Prediction",
+            marker: {
+                size: 6,
+                color: "#29d5e7",
+                opacity: 1
+            },
+            hovertemplate:
+                "<b>DINOv2 Predicted Lake</b><br>" +
+                "Elevation: %{z:.1f} m<extra></extra>"
+        };
+
+        const defaultCamera = {
+            eye: { x: 1.55, y: 1.45, z: 1.12 },
+            up: { x: 0, y: 0, z: 1 }
+        };
+
+        await Plotly.newPlot(
+            "terrain",
+            [terrainTrace, lakeTrace],
+            {
+                paper_bgcolor: "rgba(0,0,0,0)",
+                plot_bgcolor: "rgba(0,0,0,0)",
+                margin: { l: 0, r: 0, t: 0, b: 0 },
+                showlegend: false,
+                scene: {
+                    bgcolor: "rgba(0,0,0,0)",
+                    xaxis: {
+                        title: "Longitude",
+                        color: "#78909f",
+                        gridcolor: "#203542",
+                        zeroline: false
+                    },
+                    yaxis: {
+                        title: "Latitude",
+                        color: "#78909f",
+                        gridcolor: "#203542",
+                        zeroline: false
+                    },
+                    zaxis: {
+                        title: "Elevation (m)",
+                        color: "#78909f",
+                        gridcolor: "#203542",
+                        zeroline: false
+                    },
+                    camera: defaultCamera,
+                    aspectmode: "manual",
+                    aspectratio: { x: 1.12, y: 0.95, z: 0.72 }
+                }
+            },
+            { responsive: true, displaylogo: false, scrollZoom: true }
+        );
+
+        terrainError.style.display = "none";
+
+        document.getElementById("resetMap").onclick = () =>
+            Plotly.relayout("terrain", { "scene.camera": defaultCamera });
+
+        document.getElementById("topMap").onclick = () =>
+            Plotly.relayout("terrain", {
+                "scene.camera": {
+                    eye: { x: 0.01, y: 0.01, z: 2.45 },
+                    up: { x: 0, y: 1, z: 0 }
+                }
+            });
+
+        // ---------------- ACTUAL BLUEPRINT ----------------
+        const bp = data.blueprint;
+
+        if (!bp) {
+            throw new Error("No lake footprint was generated from prediction.tif.");
+        }
+
+        const surface = {
+            x: bp.x,
+            y: bp.y,
+            z: bp.z,
+            type: "surface",
+            name: "DINOv2 Lake Footprint",
+            colorscale: [
+                [0.00, "#06131b"],
+                [0.25, "#09242e"],
+                [0.55, "#0d4652"],
+                [1.00, "#27d5e7"]
+            ],
+            showscale: false,
+            opacity: 0.78,
+            connectgaps: false,
+            lighting: {
+                ambient: 0.78,
+                diffuse: 0.30,
+                specular: 0.18,
+                roughness: 0.68
+            },
+            contours: {
+                x: {
+                    show: true,
+                    color: "rgba(91,235,244,.22)",
+                    width: 1
+                },
+                y: {
+                    show: true,
+                    color: "rgba(91,235,244,.22)",
+                    width: 1
+                }
+            },
+            hovertemplate:
+                "Easting: %{x:.1f} m<br>" +
+                "Northing: %{y:.1f} m<br>" +
+                "Relative elevation: %{z:.1f} m<extra></extra>"
+        };
+
+        // Derive boundary cells from the actual binary footprint.
+        const z = bp.z;
+        const x = bp.x;
+        const y = bp.y;
+        const bx = [];
+        const by = [];
+        const bz = [];
+
+        const valid = (r, c) =>
+            r >= 0 && r < z.length &&
+            c >= 0 && c < z[r].length &&
+            z[r][c] !== null &&
+            Number.isFinite(z[r][c]);
+
+        for (let r = 0; r < z.length; r++) {
+            for (let c = 0; c < z[r].length; c++) {
+                if (!valid(r, c)) continue;
+
+                const edge =
+                    !valid(r - 1, c) ||
+                    !valid(r + 1, c) ||
+                    !valid(r, c - 1) ||
+                    !valid(r, c + 1);
+
+                if (edge) {
+                    bx.push(x[c]);
+                    by.push(y[r]);
+                    bz.push(z[r][c] + 5);
+                }
+            }
+        }
+
+        const boundary = {
+            x: bx,
+            y: by,
+            z: bz,
+            type: "scatter3d",
+            mode: "markers",
+            name: "DINOv2 Boundary",
+            marker: {
+                size: 3.5,
+                color: "#a4f8fb",
+                opacity: 0.95
+            },
+            hoverinfo: "skip"
+        };
+
+        await Plotly.newPlot(
+            "blueprint",
+            [surface, boundary],
+            {
+                paper_bgcolor: "rgba(0,0,0,0)",
+                plot_bgcolor: "rgba(0,0,0,0)",
+                margin: { l: 0, r: 0, t: 0, b: 0 },
+                showlegend: false,
+                scene: {
+                    bgcolor: "rgba(0,0,0,0)",
+                    xaxis: {
+                        title: "Easting (m)",
+                        color: "#66828e",
+                        gridcolor: "rgba(41,213,231,.13)",
+                        zeroline: false
+                    },
+                    yaxis: {
+                        title: "Northing (m)",
+                        color: "#66828e",
+                        gridcolor: "rgba(41,213,231,.13)",
+                        zeroline: false
+                    },
+                    zaxis: {
+                        title: "Relative Elevation (m)",
+                        color: "#66828e",
+                        gridcolor: "rgba(41,213,231,.08)",
+                        zeroline: false
+                    },
+                    camera: {
+                        eye: { x: 1.18, y: 1.18, z: 0.62 },
+                        up: { x: 0, y: 0, z: 1 }
+                    },
+                    aspectmode: "manual",
+                    aspectratio: { x: 1.45, y: 0.95, z: 0.48 }
+                }
+            },
+            { responsive: true, displaylogo: false, scrollZoom: true }
+        );
+
+        blueprintError.style.display = "none";
+
+        document.getElementById("bpTop").onclick = () =>
+            Plotly.relayout("blueprint", {
+                "scene.camera": {
+                    eye: { x: 0.01, y: 0.01, z: 2.5 },
+                    up: { x: 0, y: 1, z: 0 }
+                }
+            });
+
+        document.getElementById("bp3d").onclick = () =>
+            Plotly.relayout("blueprint", {
+                "scene.camera": {
+                    eye: { x: 1.18, y: 1.18, z: 0.62 },
+                    up: { x: 0, y: 0, z: 1 }
+                }
+            });
+
+        // Real geometry statistics.
+        const area = Number(bp.area_m2 || 0);
+        document.getElementById("lakeArea").textContent =
+            (area / 1e6).toFixed(3) + " km²";
+        document.getElementById("lakeLength").textContent =
+            Number(bp.length_m || 0).toFixed(0) + " m";
+        document.getElementById("lakeWidth").textContent =
+            Number(bp.width_m || 0).toFixed(0) + " m";
+        document.getElementById("lakeMean").textContent =
+            Number(bp.center_elevation || 0).toFixed(0) + " m";
+        document.getElementById("maskPixels").textContent =
+            data.lake_pixel_count;
+
+    } catch (err) {
+        showError(terrainError, "Visualization error: " + err.message);
+        showError(blueprintError, "Blueprint error: " + err.message);
+    }
+
+    // ---------------- DATASET UPLOAD ----------------
+    const file = document.getElementById("file");
+    const predict = document.getElementById("predict");
+    const fileInfo = document.getElementById("fileInfo");
+
+    file.onchange = () => {
+        if (!file.files.length) return;
+
+        fileInfo.style.display = "flex";
+        document.getElementById("fileName").textContent = file.files[0].name;
+        document.getElementById("uploadTitle").textContent = "Dataset selected";
+        document.getElementById("uploadText").textContent = "Ready for model inference";
+        document.getElementById("modelStatus").textContent = "Dataset loaded";
+        predict.disabled = false;
+    };
+
+    document.getElementById("remove").onclick = () => {
+        file.value = "";
+        fileInfo.style.display = "none";
+        document.getElementById("uploadTitle").textContent = "Upload dataset";
+        document.getElementById("uploadText").textContent = "Historical lake features";
+        document.getElementById("modelStatus").textContent = "Upload a dataset to begin";
+        predict.disabled = true;
+    };
+
+    predict.onclick = () => {
+        predict.disabled = true;
+        predict.textContent = "◌ Processing historical record";
+        document.getElementById("modelStatus").textContent =
+            "Frontend demo — model endpoint not connected yet";
+
+        setTimeout(() => {
+            const score = 72;
+            document.getElementById("score").textContent = score + "%";
+            document.getElementById("level").textContent = "Moderate–High";
+            document.getElementById("desc").textContent =
+                "Demo output. Connect this panel to the trained temporal GLOF model.";
+            document.getElementById("state").textContent = "DEMO";
+            document.getElementById("ring").style.background =
+                `radial-gradient(circle,#091721 55%,transparent 56%),` +
+                `conic-gradient(#29d5e7 ${score * 3.6}deg,#1a2c37 0deg)`;
+
+            document.getElementById("modelStatus").textContent =
+                "Frontend demonstration complete";
+            predict.disabled = false;
+            predict.textContent = "⚡ Run GLOF Prediction";
+        }, 900);
+    };
+});
