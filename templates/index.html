@@ -1,32 +1,8 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>GLOF Intelligence Console</title>
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-</head>
-<body>
-<div class="shell">
-<header><div><small>CRYOSPHERE INTELLIGENCE CONSOLE</small><h1>Glacial Lake <span>GLOF</span> Analysis</h1><p>Transformer segmentation • DEM fusion • temporal outburst forecasting</p></div><div class="online"><i></i> ONLINE</div></header>
-<div class="workflow"><span>01 SPATIAL</span><b>→</b><span>02 TEMPORAL</span><b>→</b><span>03 RISK OUTPUT</span><em>SCENE · GL080883E30053N</em></div>
-<main>
-<section>
-<div class="head"><div><small>SPATIAL ANALYSIS</small><h2>Terrain & Lake Geometry</h2><p>Actual Copernicus DEM + DINOv2 prediction mask</p></div><div><button id="resetMap">↺ Reset</button><button id="topMap">⌃ Top</button></div></div>
-<div class="map"><div class="tag"><i></i> ACTUAL DEM + PREDICTION</div><div id="terrain"></div><div id="terrainError" class="error"></div><div class="legend"><span><i class="earth"></i> Copernicus DEM</span><span><i class="water"></i> DINOv2 lake</span></div></div>
-<div class="metrics"><div><small>MEAN LAKE ELEVATION</small><strong>4,376 <em>m</em></strong><p>DEM-derived</p></div><div><small>TERRAIN SLOPE</small><strong>18.57 <em>°</em></strong><p>Lake pixels</p></div><div><small>ELEVATION DIFFERENCE</small><strong>36.02 <em>m</em></strong><p>Lake vs surroundings</p></div><div><small>MASK PIXELS</small><strong id="maskPixels">—</strong><p>DINOv2 prediction</p></div></div>
-<div class="blueprint-card"><div class="bp-head"><div><small>ACTUAL MASK GEOMETRY</small><h3>Lake Engineering Blueprint</h3></div><div><button id="bpTop">TOP</button><button id="bp3d">3D</button></div></div><div id="blueprint"></div><div id="blueprintError" class="error bp-error"></div><div class="bp-info"><span><b id="lakeArea">—</b> AREA</span><span><b id="lakeLength">—</b> LENGTH</span><span><b id="lakeWidth">—</b> WIDTH</span><span><b id="lakeMean">—</b> MEAN ELEV.</span></div></div>
-</section>
-<aside>
-<div class="predict-head"><small>TEMPORAL ANALYSIS</small><h2>GLOF Predictor</h2><p>Upload up to 10 years of lake observations and run the trained outburst model.</p></div>
-<div class="card"><div class="title"><b>01</b><div><h3>Historical Lake Dataset</h3><p>CSV or Excel time series</p></div></div><label class="drop" for="file"><input id="file" type="file" accept=".csv,.xlsx,.xls"><strong>↑</strong><b id="uploadTitle">Upload dataset</b><span id="uploadText">Historical lake features</span><em>Browse files</em></label><div class="file" id="fileInfo"><b>DATA</b><span id="fileName"></span><button id="remove">×</button></div></div>
-<div class="card"><div class="title"><b>02</b><div><h3>Prediction Model</h3><p>Temporal feature set</p></div></div><div class="features"><div>Lake area <b>✓</b></div><div>Area change <b>✓</b></div><div>Elevation <b>✓</b></div><div>Slope / terrain <b>✓</b></div><div>Long-term trend <b>✓</b></div><div>Historical variability <b>✓</b></div></div><button class="predict" id="predict" disabled>⚡ Run GLOF Prediction</button><small class="status" id="modelStatus">Upload a dataset to begin</small></div>
-<div class="result"><div class="result-head"><div><small>MODEL OUTPUT</small><h3>Susceptibility Assessment</h3></div><em id="state">WAITING</em></div><div class="risk"><div id="ring"><b id="score">—</b><small>RISK</small></div><div><small>OUTBURST SUSCEPTIBILITY</small><strong id="level">Awaiting prediction</strong><p id="desc">Historical data will be evaluated by the trained model.</p></div></div><div class="scale"><span>LOW</span><i></i><span>HIGH</span></div></div>
-</aside>
-</main>
-<footer><span>DINOV2 / COPERNICUS DEM / TEMPORAL FORECASTING</span><span>FRONTEND V7</span></footer>
-</div>
-<script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
-</body>
-</html>
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>GLOF Multi-Scene Explorer</title><link rel="stylesheet" href="/static/css/style.css"><script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script></head>
+<body><header><div><div class="eyebrow">DINOv2 · COPERNICUS GLO-30 · MULTI-SCENE VALIDATION</div><h1>Glacial Lake GLOF Analysis</h1><p>20-scene terrain explorer from the uploaded 100-image dataset</p></div><div class="sceneNav"><button id="prev">←</button><select id="sceneSelect"></select><button id="next">→</button></div></header>
+<main><section class="left"><div class="bar"><div><span id="sceneTitle">SCENE</span><span class="muted" id="sceneDate"></span></div><span class="pill" id="status">Loading…</span></div>
+<div class="visualGrid"><div class="card imageCard"><div class="cardHead"><b>Satellite scene</b><span>RGB GeoTIFF</span></div><img id="sat"/></div><div class="card imageCard"><div class="cardHead"><b>Lake segmentation overlay</b><span id="maskTag">Reference label</span></div><img id="overlay"/></div></div>
+<div class="card terrain"><div class="cardHead"><b>Interactive 3D terrain</b><span>Rotate · zoom · hover</span></div><div id="plot"></div></div>
+<div class="metrics"><div><span>Mean elevation</span><strong id="elev">—</strong></div><div><span>Terrain slope</span><strong id="slope">—</strong></div><div><span>Elevation Δ</span><strong id="delta">—</strong></div><div><span>Lake area</span><strong id="area">—</strong></div></div>
+<div class="card blueprint"><div class="cardHead"><b>Lake footprint blueprint</b><span>Actual binary mask footprint</span></div><div class="blueprintBody"><div><div class="bpShape" id="bpShape"></div></div><div class="bpText"><div class="big" id="bpPixels">—</div><span>reference-mask pixels</span><p id="bpDims">—</p><p class="muted">This is a local engineering-style footprint of the reference segmentation, not a hydrodynamic water-body mesh.</p></div></div></div></section>
+<aside><div class="sideTitle">TEMPORAL GLOF PREDICTOR</div><div class="sideCard"><h3>Future-risk module</h3><p>Keep your temporal forecasting model here. The spatial explorer above now cycles through 20 different lake scenes and terrain contexts.</p><div class="drop">DROP DATASET<br><small>CSV / XLSX</small></div><button class="predict" id="predict">RUN PREDICTION</button><div class="risk"><span>DEMO OUTPUT</span><b id="riskScore">72%</b><strong id="riskLevel">Moderate–High</strong></div></div><div class="sideCard"><h3>Spatial fusion</h3><ul><li>DINOv2 lake mask</li><li>Copernicus GLO-30 elevation</li><li>Mean terrain slope</li><li>Local elevation difference</li><li>Lake footprint geometry</li></ul></div><div class="sideCard"><h3>Scene coverage</h3><div class="count" id="count">20</div><p>representative scenes selected from the uploaded 100-image dataset.</p></div></aside></main><footer>SPATIAL MODULE · 20 SCENES · DINOv2 SEGMENTATION + GLO-30 TERRAIN</footer><script src="/static/js/dashboard.js"></script></body></html>

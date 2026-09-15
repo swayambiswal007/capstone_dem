@@ -1,295 +1,165 @@
-
-from flask import Flask, render_template, jsonify
-from pathlib import Path
-import math
+from flask import Flask, jsonify, render_template, send_file, abort
+import os, json, io, math
 import numpy as np
+import rasterio
+from rasterio.warp import reproject, Resampling
+from rasterio.windows import from_bounds
+from PIL import Image
+from scipy import ndimage
 
 app = Flask(__name__)
+BASE=os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(BASE,'scenes.json')) as f: SCENES=json.load(f)
+IMG_DIR=os.path.join(BASE,'data','images'); LAB_DIR=os.path.join(BASE,'data','labels'); DEM_DIR=os.path.join(BASE,'dem')
 
-BASE = Path(__file__).resolve().parent
-DEM_DIR = BASE / "dem"
-INPUT_DIR = BASE / "input"
-
-try:
-    import rasterio
-    from rasterio.warp import reproject, Resampling
-    from rasterio.features import shapes
-except ImportError:
-    rasterio = None
+# Public Copernicus GLO-30 COG URL template. If a tile is already placed in dem/, it is used first.
+DEM_URL='https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N{lat:02d}_00_E{lon:03d}_00_DEM/Copernicus_DSM_COG_10_N{lat:02d}_00_E{lon:03d}_00_DEM.tif'
 
 
-def clean_value(v):
-    """Convert numpy/NaN/Inf values into JSON-safe Python values."""
-    if v is None:
-        return None
-    try:
-        v = float(v)
-        return v if math.isfinite(v) else None
-    except (TypeError, ValueError):
-        return None
+def scene_by_id(sid):
+    return next((s for s in SCENES if s['id']==sid), None)
 
+def safe(a):
+    a=np.asarray(a,dtype=float)
+    a[~np.isfinite(a)]=np.nan
+    return a
 
-def clean_matrix(arr):
-    arr = np.asarray(arr, dtype="float64")
-    return [
-        [clean_value(v) for v in row]
-        for row in arr
-    ]
+def local_dem_path(tile_lat,tile_lon):
+    fn=f'Copernicus_DSM_COG_10_N{tile_lat:02d}_00_E{tile_lon:03d}_00_DEM.tif'
+    return os.path.join(DEM_DIR,fn)
 
+def dem_source(bounds):
+    lat=math.floor(bounds[1]); lon=math.floor(bounds[0])
+    local=local_dem_path(lat,lon)
+    if os.path.exists(local): return local, 'Local Copernicus GLO-30 tile'
+    return '/vsicurl/'+DEM_URL.format(lat=lat,lon=lon), 'Copernicus GLO-30 (public COG)'
 
-def clean_list(arr):
-    return [clean_value(v) for v in np.asarray(arr).ravel()]
-
-
-def find_dem():
-    preferred = DEM_DIR / "Copernicus_DSM_COG_10_N30_00_E080_00_DEM.tif"
-    if preferred.exists():
-        return preferred
-
-    files = sorted(DEM_DIR.glob("*.tif"))
-    # Ignore a mistakenly placed prediction.tif if present.
-    files = [f for f in files if f.name.lower() != "prediction.tif"]
-    return files[0] if files else None
-
-
-def load_scene():
-    if rasterio is None:
-        raise RuntimeError(
-            "rasterio is not installed. Run: pip install rasterio numpy flask"
-        )
-
-    dem_path = find_dem()
-    pred_path = INPUT_DIR / "prediction.tif"
-
-    if dem_path is None:
-        raise FileNotFoundError(
-            "No Copernicus DEM .tif found inside the dem folder."
-        )
-
-    if not pred_path.exists():
-        raise FileNotFoundError(
-            "input/prediction.tif was not found. Put the DINOv2 prediction here."
-        )
-
-    with rasterio.open(dem_path) as src:
-        dem = src.read(1).astype("float32")
-        dem_transform = src.transform
-        dem_crs = src.crs
-        nodata = src.nodata
-
-    with rasterio.open(pred_path) as src:
-        prediction = src.read(1).astype("float32")
-        pred_transform = src.transform
-        pred_crs = src.crs
-
-    aligned = np.zeros(dem.shape, dtype="float32")
-
-    reproject(
-        source=prediction,
-        destination=aligned,
-        src_transform=pred_transform,
-        src_crs=pred_crs,
-        dst_transform=dem_transform,
-        dst_crs=dem_crs,
-        resampling=Resampling.nearest,
-    )
-
-    valid = np.isfinite(dem)
-    if nodata is not None:
-        valid &= dem != nodata
-
-    lake = (aligned > 0.5) & valid
-
-    if not np.any(lake):
-        raise ValueError(
-            "No lake pixels were found after aligning prediction.tif with the DEM."
-        )
-
-    return dem, lake, dem_transform, dem_crs, dem_path.name
-
-
-def pixel_xy(transform, rows, cols):
-    xs, ys = rasterio.transform.xy(
-        transform, rows, cols, offset="center"
-    )
-    return np.asarray(xs, dtype=float), np.asarray(ys, dtype=float)
-
-
-def build_payload():
-    dem, lake, transform, crs, dem_name = load_scene()
-
-    # ---------------- TERRAIN ----------------
-    h, w = dem.shape
-    lake_rows, lake_cols = np.where(lake)
-
-    # Crop around the actual predicted lake so the terrain is relevant.
-    pad = 90
-    r0 = max(0, int(lake_rows.min()) - pad)
-    r1 = min(h, int(lake_rows.max()) + pad + 1)
-    c0 = max(0, int(lake_cols.min()) - pad)
-    c1 = min(w, int(lake_cols.max()) + pad + 1)
-
-    crop = dem[r0:r1, c0:c1]
-
-    max_side = 180
-    step = max(1, math.ceil(max(crop.shape) / max_side))
-
-    terrain_z = crop[::step, ::step].copy()
-    terrain_valid = np.isfinite(terrain_z)
-
-    if not np.any(terrain_valid):
-        raise ValueError("The selected DEM crop contains no valid elevation.")
-
-    terrain_fill = float(np.nanmedian(terrain_z[terrain_valid]))
-    terrain_z[~terrain_valid] = terrain_fill
-
-    rr = np.arange(r0, r1, step)
-    cc = np.arange(c0, c1, step)
-
-    terrain_x, _ = rasterio.transform.xy(
-        transform, np.full_like(cc, r0), cc, offset="center"
-    )
-    _, terrain_y = rasterio.transform.xy(
-        transform, rr, np.full_like(rr, c0), offset="center"
-    )
-
-    # Actual lake pixels, not invented geometry.
-    lx, ly = pixel_xy(transform, lake_rows, lake_cols)
-    lz = dem[lake_rows, lake_cols]
-
-    finite = np.isfinite(lz)
-    lx, ly, lz = lx[finite], ly[finite], lz[finite]
-
-    lake_points = [
-        {"x": clean_value(x), "y": clean_value(y), "z": clean_value(z)}
-        for x, y, z in zip(lx, ly, lz)
-        if clean_value(x) is not None
-        and clean_value(y) is not None
-        and clean_value(z) is not None
-    ]
-
-    # ---------------- ACTUAL MASK BLUEPRINT ----------------
-    # Work in the same crop. The blueprint surface is literally the DEM
-    # elevation only where the DINOv2 prediction is 1.
-    mask_crop = lake[r0:r1, c0:c1]
-    dem_crop = dem[r0:r1, c0:c1]
-
-    bp_step = max(1, math.ceil(max(mask_crop.shape) / 180))
-    bp_z_abs = dem_crop[::bp_step, ::bp_step].copy()
-    bp_mask = mask_crop[::bp_step, ::bp_step]
-
-    # Preserve the actual binary footprint. Outside the mask = JSON null.
-    bp_z_abs[~bp_mask] = np.nan
-
-    bp_valid = np.isfinite(bp_z_abs)
-    mean_elevation = (
-        float(np.nanmean(bp_z_abs))
-        if np.any(bp_valid) else 0.0
-    )
-
-    # Relative elevation makes the blueprint readable without changing
-    # the true elevation statistic above.
-    bp_z_rel = bp_z_abs - mean_elevation
-
-    bp_rows = np.arange(r0, r1, bp_step)
-    bp_cols = np.arange(c0, c1, bp_step)
-
-    bp_x_geo, _ = rasterio.transform.xy(
-        transform, np.full_like(bp_cols, r0), bp_cols, offset="center"
-    )
-    _, bp_y_geo = rasterio.transform.xy(
-        transform, bp_rows, np.full_like(bp_rows, c0), offset="center"
-    )
-
-    bp_x_geo = np.asarray(bp_x_geo, dtype=float)
-    bp_y_geo = np.asarray(bp_y_geo, dtype=float)
-
-    if len(lx):
-        cx = float(np.mean(lx))
-        cy = float(np.mean(ly))
+def read_image(scene):
+    with rasterio.open(os.path.join(IMG_DIR,scene['file'])) as src:
+        arr=src.read()
+        profile=src.profile
+    if arr.shape[0]>=3:
+        rgb=np.moveaxis(arr[:3],0,-1).astype(float)
     else:
-        cx = float(np.mean(bp_x_geo))
-        cy = float(np.mean(bp_y_geo))
+        rgb=np.repeat(arr[0][...,None],3,axis=2).astype(float)
+    out=np.zeros_like(rgb,dtype=np.uint8)
+    for c in range(3):
+        band=rgb[...,c]; lo,hi=np.nanpercentile(band,[2,98])
+        out[...,c]=np.clip((band-lo)/(hi-lo+1e-9)*255,0,255)
+    return out, profile
 
-    lat_rad = math.radians(cy)
-    meters_per_deg_x = 111320.0 * math.cos(lat_rad)
-    meters_per_deg_y = 110540.0
+def read_label(scene):
+    with rasterio.open(os.path.join(LAB_DIR,scene['label_file'])) as src:
+        a=src.read(1)
+        profile=src.profile
+    # Dataset labels may be 0/1 or 0/255.
+    return (a>0).astype(np.uint8), profile
 
-    bp_x_local = (bp_x_geo - cx) * meters_per_deg_x
-    bp_y_local = (bp_y_geo - cy) * meters_per_deg_y
+def aligned_mask_and_dem(scene):
+    mask, mprof=read_label(scene)
+    with rasterio.open(os.path.join(IMG_DIR,scene['file'])) as img:
+        ibounds=img.bounds; icrs=img.crs; ih,iw=img.height,img.width
+    src_path, source_name=dem_source([ibounds.left,ibounds.bottom,ibounds.right,ibounds.top])
+    with rasterio.open(src_path) as dem:
+        # Read only a small window around the scene, with padding.
+        padx=(ibounds.right-ibounds.left)*0.25; pady=(ibounds.top-ibounds.bottom)*0.25
+        win=from_bounds(ibounds.left-padx,ibounds.bottom-pady,ibounds.right+padx,ibounds.top+pady,dem.transform)
+        win=win.round_offsets().round_lengths()
+        data=dem.read(1,window=win,boundless=True,fill_value=np.nan).astype('float32')
+        tr=dem.window_transform(win); crs=dem.crs
+    # Reproject DEM to image grid so each lake pixel gets terrain value.
+    aligned=np.full((ih,iw),np.nan,dtype='float32')
+    reproject(data,aligned,src_transform=tr,src_crs=crs,dst_transform=mprof['transform'],dst_crs=icrs,resampling=Resampling.bilinear,src_nodata=np.nan,dst_nodata=np.nan)
+    return mask,aligned,source_name
 
-    # Estimate actual dimensions from mask pixels.
-    if len(lx):
-        width_m = float((lx.max() - lx.min()) * meters_per_deg_x)
-        length_m = float((ly.max() - ly.min()) * meters_per_deg_y)
-    else:
-        width_m = length_m = 0.0
+def terrain_metrics(scene, mask, dem):
+    valid=np.isfinite(dem); lake=mask.astype(bool)&valid
+    if not lake.any(): raise RuntimeError('No valid DEM cells overlap the reference lake mask.')
+    elev=dem[lake]
+    # Gradient in geographic coordinates; converted approximately to metres for a presentation metric.
+    with rasterio.open(os.path.join(IMG_DIR,scene['file'])) as src:
+        px=abs(src.transform.a)*111320*np.cos(np.deg2rad(np.nanmean(dem[lake])*0+30))
+        py=abs(src.transform.e)*111320
+    gy,gx=np.gradient(dem,py,px)
+    slope=np.degrees(np.arctan(np.sqrt(gx*gx+gy*gy)))
+    # Surrounding terrain: ~8 image pixels, roughly 240 m at 30m data scale.
+    dil=ndimage.binary_dilation(mask.astype(bool),iterations=8)
+    ring=dil & (~mask.astype(bool)) & valid
+    mean_sur=float(np.nanmean(dem[ring])) if ring.any() else float(np.nanmean(dem[valid]))
+    mean_lake=float(np.nanmean(elev)); diff=abs(mean_sur-mean_lake)
+    area=float(lake.sum()*900.0)  # approx 30m x 30m
+    return {'mean_elevation':mean_lake,'min_elevation':float(np.nanmin(elev)),'max_elevation':float(np.nanmax(elev)),
+            'mean_slope':float(np.nanmean(slope[lake])),'surrounding_elevation':mean_sur,
+            'elevation_difference':diff,'lake_pixels':int(lake.sum()),'area_m2':area,
+            'coverage_pct':float(lake.sum()/(mask.shape[0]*mask.shape[1])*100)}
 
-    area_m2 = float(np.sum(lake) * abs(transform.a * transform.e))
+def json_grid(a):
+    a=np.asarray(a)
+    return [[None if not np.isfinite(v) else float(v) for v in row] for row in a]
 
-    blueprint = {
-        "x": clean_list(bp_x_local),
-        "y": clean_list(bp_y_local),
-        "z": clean_matrix(bp_z_rel),
-        "absolute_z": clean_matrix(bp_z_abs),
-        "center_elevation": clean_value(mean_elevation),
-        "width_m": clean_value(width_m),
-        "length_m": clean_value(length_m),
-        "area_m2": clean_value(area_m2),
-    }
+def crop_terrain(scene,dem,mask):
+    valid=np.isfinite(dem)
+    ys,xs=np.where(mask.astype(bool)&valid)
+    if len(xs)==0: ys,xs=np.where(valid)
+    y0=max(0,int(ys.min())-70); y1=min(dem.shape[0],int(ys.max())+71)
+    x0=max(0,int(xs.min())-70); x1=min(dem.shape[1],int(xs.max())+71)
+    d=dem[y0:y1,x0:x1]; m=mask[y0:y1,x0:x1].astype(bool)
+    # downsample for browser payload
+    maxside=170; sy=max(1,int(np.ceil(max(d.shape)/maxside)))
+    d=d[::sy,::sy]; m=m[::sy,::sy]
+    h,w=d.shape
+    yy,xx=np.mgrid[0:h,0:w]
+    z=d.copy(); z[~np.isfinite(z)]=np.nan
+    lakez=np.where(m,z,np.nan)
+    return {'x':xx.tolist(),'y':yy.tolist(),'z':json_grid(z),'lake_z':json_grid(lakez)}
 
-    return {
-        "terrain": {
-            "x": clean_list(terrain_x),
-            "y": clean_list(terrain_y),
-            "z": clean_matrix(terrain_z),
-        },
-        "lake_points": lake_points,
-        "lake_pixel_count": int(len(lake_points)),
-        "blueprint": blueprint,
-        "source": {
-            "dem": dem_name,
-            "prediction": "prediction.tif",
-            "crs": str(crs),
-        }
-    }
+def img_data_uri(arr):
+    im=Image.fromarray(arr,'RGB'); bio=io.BytesIO(); im.save(bio,'PNG',optimize=True)
+    import base64
+    return 'data:image/png;base64,'+base64.b64encode(bio.getvalue()).decode()
 
+def overlay(arr,mask):
+    out=arr.copy().astype(np.uint8)
+    edge=ndimage.binary_dilation(mask,iterations=1)^ndimage.binary_erosion(mask,iterations=1)
+    out[edge]=[0,255,230]
+    return out
 
-@app.route("/")
-def index():
-    return render_template("index.html")
+@app.route('/')
+def index(): return render_template('index.html')
+@app.route('/api/scenes')
+def scenes(): return jsonify(SCENES)
+@app.route('/api/image/<sid>')
+def image(sid):
+    s=scene_by_id(sid)
+    if not s: abort(404)
+    arr,_=read_image(s); return jsonify({'image':img_data_uri(arr)})
 
-
-@app.route("/api/scene")
-def scene():
+@app.route('/api/scene/<sid>')
+def scene(sid):
+    s=scene_by_id(sid)
+    if not s: abort(404)
     try:
-        return jsonify(build_payload())
-    except Exception as exc:
-        app.logger.exception("Scene processing failed")
-        return jsonify({"error": str(exc)}), 500
+        rgb,_=read_image(s); mask,_=read_label(s); mask,dem,source=aligned_mask_and_dem(s)
+        met=terrain_metrics(s,mask,dem); terr=crop_terrain(s,dem,mask)
+        # Blueprint is the actual reference mask footprint, not a fabricated shape.
+        by,bx=np.where(mask.astype(bool))
+        if len(bx):
+            minx,maxx,miny,maxy=bx.min(),bx.max(),by.min(),by.max()
+            bp={'width_px':int(maxx-minx+1),'length_px':int(maxy-miny+1),'mask_pixels':int(mask.sum())}
+        else: bp={'width_px':0,'length_px':0,'mask_pixels':0}
+        return jsonify({'scene':s,'source':source,'metrics':met,'image':img_data_uri(rgb),
+                        'reference_overlay':img_data_uri(overlay(rgb,mask)),
+                        'terrain':terr,'blueprint':bp,'prediction_status':'Reference label loaded — replace with DINOv2 output when prediction.tif is available.'})
+    except Exception as e:
+        return jsonify({'error':str(e),'scene':s,'hint':'Place the matching Copernicus DEM tile in dem/ or run with internet access so the public COG can be read.'}),503
 
+@app.route('/api/blueprint/<sid>')
+def blueprint(sid):
+    # compatibility endpoint
+    r=scene(sid); return r
 
-# Compatibility endpoints used by the frontend.
-# Both return the same single, JSON-safe scene payload so older/newer
-# dashboard.js versions can work with this backend.
-@app.route("/api/terrain")
-def terrain():
-    try:
-        return jsonify(build_payload())
-    except Exception as exc:
-        app.logger.exception("Terrain processing failed")
-        return jsonify({"error": str(exc)}), 500
+@app.route('/api/predict')
+def predict():
+    return jsonify({'status':'demo','score':72,'level':'Moderate–High','message':'Temporal predictor UI is connected as a presentation stub. Connect your trained temporal model here.'})
 
-
-@app.route("/api/blueprint")
-def blueprint():
-    try:
-        payload = build_payload()
-        return jsonify(payload.get("blueprint"))
-    except Exception as exc:
-        app.logger.exception("Blueprint processing failed")
-        return jsonify({"error": str(exc)}), 500
-
-
-if __name__ == "__main__":
-    app.run(debug=True)
+if __name__=='__main__': app.run(host='0.0.0.0',port=5000,debug=True)

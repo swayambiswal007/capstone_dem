@@ -1,23 +1,35 @@
-# GLOF Frontend V8 — endpoint + NaN fixed
+# GLOF 20-Scene Terrain Explorer
 
-The reported HTTP 404 happened because the browser requested `/api/terrain`
-while the backend version exposed a different route.
+This package integrates 20 representative image/label pairs selected from the uploaded 100-scene dataset into the existing spatial dashboard concept.
 
-V8:
-- dashboard.js uses `/api/scene`
-- app.py also exposes `/api/terrain` and `/api/blueprint` compatibility routes
-- NaN/Infinity values are converted to JSON-safe null
-- actual prediction.tif is aligned to the Copernicus DEM
-- actual DINOv2 mask is used for the blueprint
+## What is included
+- 20 RGB GeoTIFF scenes in `data/images/`
+- matching reference labels in `data/labels/`
+- `scenes.json` manifest
+- interactive Flask + Plotly dashboard
+- scene selector with Previous/Next navigation
+- RGB scene viewer
+- reference-label overlay
+- Copernicus GLO-30 terrain retrieval
+- 3D terrain surface with the lake footprint highlighted
+- elevation, slope, elevation-difference and area metrics
+- lake footprint blueprint
+- existing temporal GLOF predictor panel as a presentation stub
 
-Install:
-pip install flask rasterio numpy
+## Important scientific distinction
+The uploaded ZIP contains images and labels, but not DINOv2 prediction rasters. Therefore the overlay is explicitly labelled **Reference label**. Do not present it as a DINOv2 prediction in a paper/panel until you connect your trained DINOv2 model or supply its `prediction.tif` outputs.
 
-Run:
+## DEM handling
+The app first looks for a matching Copernicus GLO-30 tile in `dem/`. If it is not present, it attempts to read the public Copernicus COG directly over the internet. For a reliable offline presentation, download the required Copernicus tiles and place them in `dem/` using their official filenames, for example:
+
+`Copernicus_DSM_COG_10_N30_00_E080_00_DEM.tif`
+
+## Run
+```bash
+pip install flask rasterio numpy scipy pillow
 python app.py
+```
+Open `http://127.0.0.1:5000`
 
-Then hard refresh:
-Ctrl + F5
-
-Expected:
-GET /api/scene 200
+## Why these 20
+The 20 scenes are selected at approximately regular intervals through the 100-image dataset, giving a broader geographic/scene sample instead of taking only the first 20 files.
