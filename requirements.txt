@@ -3,3 +3,5 @@ rasterio
 numpy
 scipy
 pillow
+
+scikit-image>=0.24

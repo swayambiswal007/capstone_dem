@@ -6,6 +6,7 @@ from rasterio.warp import reproject, Resampling
 from rasterio.windows import from_bounds
 from PIL import Image
 from scipy import ndimage
+from skimage import measure
 
 app = Flask(__name__)
 BASE=os.path.dirname(os.path.abspath(__file__))
@@ -104,14 +105,29 @@ def crop_terrain(scene,dem,mask):
     y0=max(0,int(ys.min())-70); y1=min(dem.shape[0],int(ys.max())+71)
     x0=max(0,int(xs.min())-70); x1=min(dem.shape[1],int(xs.max())+71)
     d=dem[y0:y1,x0:x1]; m=mask[y0:y1,x0:x1].astype(bool)
-    # downsample for browser payload
+    # Downsample terrain and mask for a responsive browser payload.
     maxside=170; sy=max(1,int(np.ceil(max(d.shape)/maxside)))
     d=d[::sy,::sy]; m=m[::sy,::sy]
     h,w=d.shape
     yy,xx=np.mgrid[0:h,0:w]
     z=d.copy(); z[~np.isfinite(z)]=np.nan
     lakez=np.where(m,z,np.nan)
-    return {'x':xx.tolist(),'y':yy.tolist(),'z':json_grid(z),'lake_z':json_grid(lakez)}
+
+    # Extract the actual lake footprint boundary from the binary mask.
+    # This replaces the old decorative/elliptical blueprint with a true
+    # 3-D outline that follows the segmentation footprint on the terrain.
+    contours=measure.find_contours(m.astype(float),0.5)
+    outline=[]
+    if contours:
+        c=max(contours,key=len)
+        for row,col in c:
+            r=int(round(row)); q=int(round(col))
+            if 0<=r<h and 0<=q<w and np.isfinite(z[r,q]):
+                outline.append([float(q),float(r),float(z[r,q])])
+    return {
+        'x':xx.tolist(),'y':yy.tolist(),'z':json_grid(z),'lake_z':json_grid(lakez),
+        'lake_outline':outline
+    }
 
 def img_data_uri(arr):
     im=Image.fromarray(arr,'RGB'); bio=io.BytesIO(); im.save(bio,'PNG',optimize=True)
